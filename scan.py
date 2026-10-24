@@ -1,5 +1,6 @@
 """Escaneo de un solo disparo para GitHub Actions. Avisa a Discord y guarda state.json."""
 import asyncio
+import json
 import os
 import sys
 
@@ -10,7 +11,8 @@ import core
 API = "https://discord.com/api/v10"
 
 
-async def send(session: aiohttp.ClientSession, content: str | None = None, embeds: list | None = None):
+async def send(session: aiohttp.ClientSession, content: str | None = None,
+               embeds: list | None = None, files: list[tuple[str, bytes]] | None = None):
     payload = {}
     if content:
         payload["content"] = content
@@ -24,7 +26,15 @@ async def send(session: aiohttp.ClientSession, content: str | None = None, embed
         url = f"{API}/channels/{os.environ['CHANNEL_ID']}/messages"
         headers = {"Authorization": f"Bot {os.environ['DISCORD_TOKEN']}"}
 
-    async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as r:
+    kwargs = {"json": payload}
+    if files:  # multipart: JSON + imágenes adjuntas
+        form = aiohttp.FormData()
+        form.add_field("payload_json", json.dumps(payload), content_type="application/json")
+        for i, (name, data) in enumerate(files):
+            form.add_field(f"files[{i}]", data, filename=name, content_type="image/png")
+        kwargs = {"data": form}
+
+    async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30), **kwargs) as r:
         if r.status >= 300:
             raise RuntimeError(f"Discord respondió {r.status}: {await r.text()}")
 
@@ -39,8 +49,9 @@ async def main() -> int:
         if result.first_run:
             await send(session, content=f"✅ Línea base guardada: {result.known_count} handitems conocidos. "
                                         "A partir de ahora avisaré de los nuevos.")
-        for i in range(0, len(result.new), 10):  # máx. 10 embeds por mensaje
-            await send(session, embeds=[core.embed_dict(n) for n in result.new[i : i + 10]])
+        for item in result.new:  # un mensaje por versión, con su vista previa
+            files = [("preview.png", item.image)] if item.image else None
+            await send(session, embeds=[core.embed_dict(item)], files=files)
 
     # Solo se guarda tras avisar: si Discord falla, el próximo run lo reintenta.
     if core.save_state(result.state):
