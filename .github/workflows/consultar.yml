@@ -1,0 +1,52 @@
+name: Consultar handitem
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: "ID(s) del handitem. Ejemplos: 310 | 310, 311 | 300-305"
+        required: true
+        type: string
+      servidor:
+        description: "Servidor donde buscar (auto = todos)"
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - sandbox
+          - com
+          - es
+          - fi
+          - com.br
+          - com.tr
+          - nl
+          - de
+          - fr
+          - it
+
+permissions:
+  contents: read
+
+jobs:
+  consultar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install aiohttp pillow
+
+      - name: Buscar handitem y publicarlo en Discord
+        run: python lookup.py
+        env:
+          HANDITEM_IDS: ${{ inputs.ids }}
+          SERVIDOR: ${{ inputs.servidor }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
