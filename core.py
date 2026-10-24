@@ -316,12 +316,12 @@ async def scan() -> ScanResult:
     return result
 
 
-def embed_dict(item: NewItems) -> dict:
+def embed_dict(item: NewItems, title: str | None = None) -> dict:
     ids = ", ".join(map(str, item.ids))
     if len(ids) > 1000:
         ids = ids[:997] + "..."
     embed = {
-        "title": f"🆕 {len(item.ids)} nuevo(s) handitem(s)",
+        "title": title or f"🆕 {len(item.ids)} nuevo(s) handitem(s)",
         "color": 0x2ECC71,
         "fields": [
             {"name": "IDs", "value": ids, "inline": False},
