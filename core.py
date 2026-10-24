@@ -43,7 +43,8 @@ STATE_FILE = Path(os.getenv("STATE_FILE") or "state.json")
 SWF_NAME = "hh_human_item.swf"
 HEADERS = {"User-Agent": "Mozilla/5.0 (HabboHanditemBot)"}
 MAX_SEEN = 50  # versiones del cliente recordadas
-MAX_PREVIEW = 18  # handitems que se dibujan en la imagen de vista previa
+ROWS_PER_PAGE = 6  # filas (handitem + tipo) por imagen
+MAX_PAGES = 3  # imágenes máximas por aviso
 SPRITE_REGEX = re.compile(r"_h_(crr|drk)_[a-z]+_(\d+)_(\d+)_(\d+)$")
 
 
@@ -151,56 +152,93 @@ def _decode_lossless2(body: bytes):
     return None
 
 
-def render_preview(data: bytes, ids, max_items: int = MAX_PREVIEW) -> bytes | None:
-    """Hoja PNG con un sprite por handitem. None si no hay Pillow o no hay imágenes."""
+LABEL_W, CELL_W, CELL_H, HEAD_H = 84, 96, 100, 28
+BOX_W, BOX_H = 88, 84
+KIND_LABEL = {"crr": "mano", "drk": "beber"}
+
+
+def _font(size: int):
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _fit_scale(imgs) -> float:
+    """Misma escala para todas las direcciones de una fila."""
+    s = min(min(BOX_W / im.width, BOX_H / im.height) for im in imgs.values())
+    return float(min(5, int(s))) if s >= 1 else s
+
+
+def _scaled(img, s: float):
+    if s >= 1:
+        k = int(s)
+        return img.resize((img.width * k, img.height * k), Image.NEAREST)
+    return img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))), Image.LANCZOS)
+
+
+def _draw_page(rows) -> bytes:
+    width = LABEL_W + 8 * CELL_W
+    sheet = Image.new("RGBA", (width, HEAD_H + len(rows) * CELL_H), (43, 45, 49, 255))
+    draw = ImageDraw.Draw(sheet)
+    f_big, f_small = _font(17), _font(13)
+    muted, text, line = (148, 155, 164, 255), (220, 221, 222, 255), (60, 63, 68, 255)
+
+    draw.text((8, 6), "dir", fill=muted, font=f_small)
+    for d in range(8):
+        label = str(d)
+        tw = draw.textlength(label, font=f_small)
+        draw.text((LABEL_W + d * CELL_W + (CELL_W - tw) / 2, 6), label, fill=muted, font=f_small)
+
+    for r, (item_id, kind, imgs) in enumerate(rows):
+        y = HEAD_H + r * CELL_H
+        draw.line([(0, y), (width, y)], fill=line)
+        draw.text((10, y + CELL_H // 2 - 20), f"#{item_id}", fill=text, font=f_big)
+        draw.text((10, y + CELL_H // 2 + 2), KIND_LABEL[kind], fill=muted, font=f_small)
+        scale = _fit_scale(imgs)
+        for d, img in imgs.items():
+            img = _scaled(img, scale)
+            x = LABEL_W + d * CELL_W + (CELL_W - img.width) // 2
+            sheet.paste(img, (x, y + (CELL_H - img.height) // 2), img)
+    buf = io.BytesIO()
+    sheet.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def render_previews(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
+                    max_pages: int = MAX_PAGES) -> tuple[list[bytes], int]:
+    """Imágenes PNG con cada handitem en sus 8 direcciones (mano y, si existe, beber).
+    Devuelve (páginas, cuántos handitems caben en ellas)."""
     if Image is None:
-        return None
+        return [], 0
     swf = decompress_swf(data)
     bitmaps = {}
     for code, body in iter_tags(swf):
         if code == 36:
             bitmaps[struct.unpack_from("<H", body, 0)[0]] = body
 
-    sprites: dict[int, list] = {}
+    sprites: dict[tuple[int, str], dict[int, int]] = {}
     for name, tag in symbol_ids(swf).items():
         m = SPRITE_REGEX.search(name)
-        if m:  # preferimos "carry", dirección 2 y primer frame
-            key = (m.group(1) != "crr", abs(int(m.group(3)) - 2), int(m.group(4)))
-            sprites.setdefault(int(m.group(2)), []).append((key, tag))
+        if m and int(m.group(4)) == 0:  # frame 0
+            sprites.setdefault((int(m.group(2)), m.group(1)), {})[int(m.group(3))] = tag
 
-    tiles = []
-    for i in sorted(ids)[:max_items]:
-        img = None
-        for _, tag in sorted(sprites.get(i, [])):
-            if tag in bitmaps:
-                img = _decode_lossless2(bitmaps[tag])
-                if img:
-                    break
-        tiles.append((i, img))
-    if not any(img for _, img in tiles):
-        return None
-
-    cell_w, cell_h, box_w, box_h = 120, 120, 96, 80
-    cols = min(6, len(tiles))
-    rows = -(-len(tiles) // cols)
-    sheet = Image.new("RGBA", (cols * cell_w, rows * cell_h), (43, 45, 49, 255))
-    draw = ImageDraw.Draw(sheet)
-    try:
-        font = ImageFont.load_default(size=16)
-    except TypeError:
-        font = ImageFont.load_default()
-    for n, (i, img) in enumerate(tiles):
-        cx, cy = (n % cols) * cell_w, (n // cols) * cell_h
-        if img:
-            scale = max(1, min(5, box_w // img.width, box_h // img.height))
-            img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
-            sheet.paste(img, (cx + (cell_w - img.width) // 2, cy + 8 + (box_h - img.height) // 2), img)
-        label = f"#{i}"
-        tw = draw.textlength(label, font=font)
-        draw.text((cx + (cell_w - tw) / 2, cy + cell_h - 28), label, fill=(220, 221, 222, 255), font=font)
-    buf = io.BytesIO()
-    sheet.convert("RGB").save(buf, "PNG")
-    return buf.getvalue()
+    rows = []
+    for i in sorted(ids):
+        for kind in ("crr", "drk"):
+            imgs = {}
+            for d, tag in sprites.get((i, kind), {}).items():
+                if d < 8 and tag in bitmaps:
+                    img = _decode_lossless2(bitmaps[tag])
+                    if img and img.width * img.height > 4:  # 1x1 = marcador vacío
+                        imgs[d] = img
+            if imgs:
+                rows.append((i, kind, imgs))
+    rows = rows[: rows_per_page * max_pages]
+    if not rows:
+        return [], 0
+    pages = [_draw_page(rows[k : k + rows_per_page]) for k in range(0, len(rows), rows_per_page)]
+    return pages, len({r[0] for r in rows})
 
 
 # ───────────────────────── Red ─────────────────────────
@@ -241,7 +279,8 @@ class NewItems:
     swf_url: str
     domains: list[str]
     ids: list[int]
-    image: bytes | None = None  # PNG con la vista previa
+    images: list[bytes] = field(default_factory=list)  # PNG de vista previa
+    ids_shown: int = 0  # handitems incluidos en las imágenes
 
 
 @dataclass
@@ -292,17 +331,17 @@ async def scan() -> ScanResult:
                 continue
             result.names |= names
             added = sorted(ids - known)
-            image = None
+            images, shown = [], 0
             if added and state["initialized"]:  # en la línea base no se avisa
                 try:
-                    image = await asyncio.to_thread(render_preview, data, added)
+                    images, shown = await asyncio.to_thread(render_previews, data, added)
                 except Exception as e:
                     result.log.append(f"⚠️ vista previa no disponible ({e})")
             known |= ids
             seen.append(client_url)
             result.log.append(f"📦 {', '.join(doms)}: {swf_url} → {len(ids)} handitems, {len(added)} nuevos")
             if added:
-                result.new.append(NewItems(swf_url, doms, added, image))
+                result.new.append(NewItems(swf_url, doms, added, images, shown))
 
     result.first_run = (not state["initialized"]) and bool(known)
     if result.first_run:
@@ -316,11 +355,12 @@ async def scan() -> ScanResult:
     return result
 
 
-def embed_dict(item: NewItems, title: str | None = None) -> dict:
+def embed_dicts(item: NewItems, title: str | None = None) -> list[dict]:
+    """Embed principal + un embed por cada imagen extra (Discord los muestra juntos)."""
     ids = ", ".join(map(str, item.ids))
     if len(ids) > 1000:
         ids = ids[:997] + "..."
-    embed = {
+    main = {
         "title": title or f"🆕 {len(item.ids)} nuevo(s) handitem(s)",
         "color": 0x2ECC71,
         "fields": [
@@ -329,8 +369,17 @@ def embed_dict(item: NewItems, title: str | None = None) -> dict:
             {"name": "SWF", "value": item.swf_url[:1000], "inline": False},
         ],
     }
-    if item.image:
-        embed["image"] = {"url": "attachment://preview.png"}
-        if len(item.ids) > MAX_PREVIEW:
-            embed["footer"] = {"text": f"Vista previa de los primeros {MAX_PREVIEW}"}
-    return embed
+    embeds = [main]
+    if item.images:
+        main["image"] = {"url": "attachment://preview_1.png"}
+        if len(item.images) > 1:
+            main["url"] = item.swf_url  # mismo url -> Discord agrupa las imágenes
+            for n in range(2, len(item.images) + 1):
+                embeds.append({"url": item.swf_url, "image": {"url": f"attachment://preview_{n}.png"}})
+        if item.ids_shown < len(item.ids):
+            main["footer"] = {"text": f"Vista previa de {item.ids_shown} de {len(item.ids)} handitems"}
+    return embeds
+
+
+def preview_files(item: NewItems) -> list[tuple[str, bytes]]:
+    return [(f"preview_{n}.png", data) for n, data in enumerate(item.images, 1)]
