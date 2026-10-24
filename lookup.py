@@ -84,11 +84,10 @@ async def main() -> int:
 
         for doms, g in groups.items():
             v, ids = g["v"], g["ids"]
-            image = await asyncio.to_thread(core.render_preview, v["data"], ids)
-            item = core.NewItems(v["swf_url"], list(doms), ids, image)
+            images, shown = await asyncio.to_thread(core.render_previews, v["data"], ids)
+            item = core.NewItems(v["swf_url"], list(doms), ids, images, shown)
             title = f"🔎 Handitem #{ids[0]}" if len(ids) == 1 else f"🔎 {len(ids)} handitems"
-            files = [("preview.png", image)] if image else None
-            await send(session, embeds=[core.embed_dict(item, title=title)], files=files)
+            await send(session, embeds=core.embed_dicts(item, title=title), files=core.preview_files(item) or None)
             print(f"✅ Enviado: {ids} ({', '.join(doms)})")
 
         if missing:
