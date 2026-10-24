@@ -33,7 +33,8 @@ async def run_scan(channel) -> core.ScanResult:
         if result.first_run:
             await channel.send(f"✅ Línea base guardada: {result.known_count} handitems conocidos.")
         for item in result.new:
-            await channel.send(embed=discord.Embed.from_dict(core.embed_dict(item)))
+            file = discord.File(io.BytesIO(item.image), "preview.png") if item.image else None
+            await channel.send(embed=discord.Embed.from_dict(core.embed_dict(item)), file=file)
         core.save_state(result.state)  # tras avisar
         return result
 
