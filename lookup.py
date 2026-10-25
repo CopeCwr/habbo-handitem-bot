@@ -84,10 +84,15 @@ async def main() -> int:
 
         for doms, g in groups.items():
             v, ids = g["v"], g["ids"]
-            images, shown = await asyncio.to_thread(core.render_previews, v["data"], ids)
+            body = await core.download_body(session, v["swf_url"])
+            if not body:
+                print(f"⚠️ no se pudo descargar {core.BODY_NAME}: vista previa sin muñeco")
+            poses = ("crr", "drk") if len(ids) <= 2 else ("crr",)  # "beber" solo en consultas cortas
+            images, shown = await asyncio.to_thread(core.render_previews, v["data"], ids, body, poses)
             item = core.NewItems(v["swf_url"], list(doms), ids, images, shown)
             title = f"🔎 Handitem #{ids[0]}" if len(ids) == 1 else f"🔎 {len(ids)} handitems"
-            await send(session, embeds=core.embed_dicts(item, title=title), files=core.preview_files(item) or None)
+            for embeds, files in core.embed_batches(item, title=title):
+                await send(session, embeds=embeds, files=files or None)
             print(f"✅ Enviado: {ids} ({', '.join(doms)})")
 
         if missing:
