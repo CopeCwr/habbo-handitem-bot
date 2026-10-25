@@ -245,11 +245,18 @@ def _render_table(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
 
 
 # ───────────────────────── Muñeco ─────────────────────────
-AXIS = 32  # eje de simetría del muñeco (las direcciones 4, 5 y 6 son la 2, 1 y 0 en espejo)
+AXIS = 33  # eje de simetría del muñeco, medido en cuerpo/cabeza/manos frontales (las direcciones 4, 5 y 6 son la 2, 1 y 0 en espejo)
 DEF_WIN = (-14, -92, 78, 14)  # ventana por defecto (izq, arriba, der, abajo) en coords del muñeco
 AV_CELL_W, AV_CELL_H, AV_SCALE, AV_TITLE_H = 184, 212, 2, 36
-FRONT_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")  # direcciones 0-5: brazo y objeto delante
-BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")  # direcciones 6-7: brazo detrás del cuerpo
+# Orden de dibujo (de atrás hacia delante) según hacia dónde mira el muñeco:
+#   0-3 mira hacia la derecha/frente: el brazo derecho (objeto) es el cercano -> delante
+#   4-7 mira hacia la izquierda/espalda: el brazo derecho queda lejos -> detrás del cuerpo,
+#       y el izquierdo (lh) pasa a ser el cercano -> delante del cuerpo
+FRONT_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")
+FRONT_LEFT_ORDER = ("sd", "rh", "bd", "lh", "hd", "it")  # dir 4: de frente, el objeto tapa la cara
+BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")
+ORDERS = {0: FRONT_ORDER, 1: FRONT_ORDER, 2: FRONT_ORDER, 3: FRONT_ORDER,
+          4: FRONT_LEFT_ORDER, 5: BEHIND_ORDER, 6: BEHIND_ORDER, 7: BEHIND_ORDER}
 POSE_LABEL = {"crr": "mano", "drk": "beber"}
 SHORT_RE = re.compile(r"(h_[a-z]+_[a-z]+_\d+_\d+_\d+)$")
 OFFSET_RE = re.compile(
@@ -314,8 +321,7 @@ def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d:
         "rh": _part(body, pose, "rh", 1, d, True),
         "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
     }
-    order = BEHIND_ORDER if d >= 6 else FRONT_ORDER
-    return [(k, parts[k]) for k in order if parts[k]]
+    return [(k, parts[k]) for k in ORDERS[d] if parts[k]]
 
 
 def _blit(canvas, img, x: int, y: int):
