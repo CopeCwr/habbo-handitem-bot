@@ -50,7 +50,8 @@ async def main() -> int:
             await send(session, content=f"✅ Línea base guardada: {result.known_count} handitems conocidos. "
                                         "A partir de ahora avisaré de los nuevos.")
         for item in result.new:  # un mensaje por versión, con su vista previa
-            await send(session, embeds=core.embed_dicts(item), files=core.preview_files(item) or None)
+            for embeds, files in core.embed_batches(item):
+                await send(session, embeds=embeds, files=files or None)
 
     # Solo se guarda tras avisar: si Discord falla, el próximo run lo reintenta.
     if core.save_state(result.state):
