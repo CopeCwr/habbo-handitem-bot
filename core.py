@@ -44,7 +44,10 @@ SWF_NAME = "hh_human_item.swf"
 HEADERS = {"User-Agent": "Mozilla/5.0 (HabboHanditemBot)"}
 MAX_SEEN = 50  # versiones del cliente recordadas
 ROWS_PER_PAGE = 6  # filas (handitem + tipo) por imagen
-MAX_PAGES = 3  # imágenes máximas por aviso
+MAX_PAGES = 3  # imágenes máximas del respaldo en tabla
+AV_MAX_PAGES = 12  # imágenes máximas con muñeco (una por handitem)
+IMAGES_PER_MESSAGE = 4  # Discord agrupa hasta 4 imágenes por mensaje
+BODY_NAME = "hh_human_body.swf"
 SPRITE_REGEX = re.compile(r"_h_(crr|drk)_[a-z]+_(\d+)_(\d+)_(\d+)$")
 
 
@@ -205,9 +208,9 @@ def _draw_page(rows) -> bytes:
     return buf.getvalue()
 
 
-def render_previews(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
-                    max_pages: int = MAX_PAGES) -> tuple[list[bytes], int]:
-    """Imágenes PNG con cada handitem en sus 8 direcciones (mano y, si existe, beber).
+def _render_table(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
+                  max_pages: int = MAX_PAGES) -> tuple[list[bytes], int]:
+    """Respaldo sin muñeco: tabla con cada handitem en sus 8 direcciones (mano y, si existe, beber).
     Devuelve (páginas, cuántos handitems caben en ellas)."""
     if Image is None:
         return [], 0
@@ -241,6 +244,161 @@ def render_previews(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
     return pages, len({r[0] for r in rows})
 
 
+# ───────────────────────── Muñeco ─────────────────────────
+AXIS = 32  # eje de simetría del muñeco (las direcciones 4, 5 y 6 son la 2, 1 y 0 en espejo)
+DEF_WIN = (-14, -92, 78, 14)  # ventana por defecto (izq, arriba, der, abajo) en coords del muñeco
+AV_CELL_W, AV_CELL_H, AV_SCALE, AV_TITLE_H = 184, 212, 2, 36
+FRONT_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")  # direcciones 0-5: brazo y objeto delante
+BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")  # direcciones 6-7: brazo detrás del cuerpo
+POSE_LABEL = {"crr": "mano", "drk": "beber"}
+SHORT_RE = re.compile(r"(h_[a-z]+_[a-z]+_\d+_\d+_\d+)$")
+OFFSET_RE = re.compile(
+    r"<asset name=['\"]([^'\"]+)['\"][^>]*>\s*<param key=['\"]offset['\"] value=['\"](-?\d+),(-?\d+)['\"]"
+)
+
+
+class SpriteLib:
+    """Sprites de un SWF de Habbo con sus offsets (los bitmaps se decodifican bajo demanda)."""
+
+    def __init__(self, data: bytes):
+        swf = decompress_swf(data)
+        self._bitmaps: dict[int, bytes] = {}
+        manifest = ""
+        for code, body in iter_tags(swf):
+            if code == 36:
+                self._bitmaps[struct.unpack_from("<H", body, 0)[0]] = body
+            elif code == 87:  # binaryData: el manifest XML con los offsets
+                manifest = body[6:].decode("utf-8", "ignore")
+        self._offsets = {m[1]: (int(m[2]), int(m[3])) for m in OFFSET_RE.finditer(manifest)}
+        self._tags = {}
+        for name, tag in symbol_ids(swf).items():
+            if m := SHORT_RE.search(name):
+                self._tags[m.group(1)] = tag
+        self._cache: dict = {}
+
+    def get(self, short: str):
+        """(imagen, (offset_x, offset_y)) o None si no existe o es un marcador vacío."""
+        if short not in self._cache:
+            res = None
+            tag, off = self._tags.get(short), self._offsets.get(short)
+            if tag in self._bitmaps and off:
+                img = _decode_lossless2(self._bitmaps[tag])
+                if img and img.width * img.height > 4:  # 1x1 = vacío
+                    res = (img, off)
+            self._cache[short] = res
+        return self._cache[short]
+
+
+def _part(lib: SpriteLib, action: str, part: str, typ: int, d: int, flip_ok: bool):
+    """(imagen, izquierda, arriba) de una pieza. Las direcciones 4-6 del cuerpo se
+    obtienen en espejo de la 2-0 cuando no existen de forma nativa."""
+    s = lib.get(f"h_{action}_{part}_{typ}_{d}_0")
+    if s:
+        img, (ox, oy) = s
+        return img, -ox, -oy
+    if flip_ok and d in (4, 5, 6):
+        s = lib.get(f"h_{action}_{part}_{typ}_{6 - d}_0")
+        if s:
+            img, (ox, oy) = s
+            return img.transpose(Image.FLIP_LEFT_RIGHT), 2 * AXIS - (-ox + img.width), -oy
+    return None
+
+
+def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d: int):
+    parts = {
+        "sd": _part(body, "std", "sd", 1, 0, False),
+        "bd": _part(body, "std", "bd", 1, d, True),
+        "hd": _part(body, "std", "hd", 1, d, True),
+        "lh": (_part(body, "crr", "lh", 1, d, True) if pose == "crr" else None)
+        or _part(body, "std", "lh", 1, d, True),
+        "rh": _part(body, pose, "rh", 1, d, True),
+        "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
+    }
+    order = BEHIND_ORDER if d >= 6 else FRONT_ORDER
+    return [(k, parts[k]) for k in order if parts[k]]
+
+
+def _blit(canvas, img, x: int, y: int):
+    x0, y0 = max(x, 0), max(y, 0)
+    x1, y1 = min(x + img.width, canvas.width), min(y + img.height, canvas.height)
+    if x1 > x0 and y1 > y0:
+        canvas.alpha_composite(img.crop((x0 - x, y0 - y, x1 - x, y1 - y)), (x0, y0))
+
+
+def _faded(img, pct: int = 30):
+    img = img.copy()
+    img.putalpha(img.getchannel("A").point(lambda v: v * pct // 100))
+    return img
+
+
+def _render_avatar_cells(body: SpriteLib, items: SpriteLib, item_id: int, pose: str):
+    """Un dibujo del muñeco con el handitem por cada dirección, o None si no hay sprite."""
+    dirs = {d: _avatar_parts(body, items, item_id, pose, d) for d in range(8)}
+    if not any(k == "it" for parts in dirs.values() for k, _ in parts):
+        return None
+    l, t, r, b = DEF_WIN
+    for parts in dirs.values():
+        for _, (img, x, y) in parts:
+            l, t, r, b = min(l, x), min(t, y), max(r, x + img.width), max(b, y + img.height)
+    w, h = r - l, b - t
+    scale = min(AV_SCALE, AV_CELL_W / w, AV_CELL_H / h)  # objetos enormes reducen el zoom
+    cells = {}
+    for d, parts in dirs.items():
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        for k, (img, x, y) in parts:
+            _blit(canvas, _faded(img) if k == "sd" else img, x - l, y - t)
+        cells[d] = _scaled(canvas, float(int(scale)) if scale >= 1 else scale)
+    return cells
+
+
+def _draw_avatar_page(item_id: int, pose: str, cells) -> bytes:
+    width, height = 4 * AV_CELL_W, AV_TITLE_H + 2 * AV_CELL_H
+    sheet = Image.new("RGBA", (width, height), (43, 45, 49, 255))
+    draw = ImageDraw.Draw(sheet)
+    f_big, f_small = _font(20), _font(13)
+    muted, text, line = (148, 155, 164, 255), (220, 221, 222, 255), (60, 63, 68, 255)
+    draw.text((12, 7), f"#{item_id} - {POSE_LABEL[pose]}", fill=text, font=f_big)
+    for d, img in cells.items():
+        cx, cy = (d % 4) * AV_CELL_W, AV_TITLE_H + (d // 4) * AV_CELL_H
+        draw.rectangle([cx, cy, cx + AV_CELL_W, cy + AV_CELL_H], outline=line)
+        draw.text((cx + 8, cy + 6), f"dir {d}", fill=muted, font=f_small)
+        _blit(sheet, img, cx + (AV_CELL_W - img.width) // 2, cy + (AV_CELL_H - img.height) // 2)
+    buf = io.BytesIO()
+    sheet.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _render_avatar(data: bytes, body_data: bytes, ids, poses, max_pages: int):
+    items, body = SpriteLib(data), SpriteLib(body_data)
+    pages, shown = [], set()
+    for i in sorted(ids):
+        for pose in poses:
+            if len(pages) >= max_pages:
+                break
+            cells = _render_avatar_cells(body, items, i, pose)
+            if cells:
+                pages.append(_draw_avatar_page(i, pose, cells))
+                shown.add(i)
+    return pages, len(shown)
+
+
+def render_previews(data: bytes, ids, body_data: bytes | None = None,
+                    poses: tuple = ("crr",)) -> tuple[list[bytes], int]:
+    """Vista previa de los handitems. Con body_data (hh_human_body.swf) dibuja el muñeco
+    sosteniendo el objeto en las 8 direcciones; sin él, usa la tabla de respaldo.
+    Devuelve (imágenes, cuántos handitems se muestran)."""
+    if Image is None:
+        return [], 0
+    if body_data:
+        try:
+            pages, shown = _render_avatar(data, body_data, ids, poses, AV_MAX_PAGES)
+            if pages:
+                return pages, shown
+        except Exception as e:  # si algo falla con el muñeco, mejor la tabla que nada
+            print(f"⚠️ no se pudo dibujar el muñeco ({e}); uso la tabla de respaldo")
+    return _render_table(data, ids)
+
+
 # ───────────────────────── Red ─────────────────────────
 async def get_client_url(session: aiohttp.ClientSession, url: str):
     async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as r:
@@ -271,6 +429,19 @@ async def download_swf(session: aiohttp.ClientSession, client_url: str):
         except (aiohttp.ClientError, asyncio.TimeoutError):
             continue
     return None, None
+
+
+async def download_body(session: aiohttp.ClientSession, swf_url: str) -> bytes | None:
+    """hh_human_body.swf vive en la misma carpeta que hh_human_item.swf."""
+    url = swf_url.rsplit("/", 1)[0] + "/" + BODY_NAME
+    try:
+        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            if r.status == 200:
+                return await r.read()
+            print(f"⚠️ {BODY_NAME}: HTTP {r.status} en {url}")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        print(f"⚠️ {BODY_NAME}: {e}")
+    return None
 
 
 # ───────────────────────── Escaneo ─────────────────────────
@@ -334,7 +505,10 @@ async def scan() -> ScanResult:
             images, shown = [], 0
             if added and state["initialized"]:  # en la línea base no se avisa
                 try:
-                    images, shown = await asyncio.to_thread(render_previews, data, added)
+                    body = await download_body(session, swf_url)
+                    if not body:
+                        result.log.append(f"⚠️ no se pudo descargar {BODY_NAME}: vista previa sin muñeco")
+                    images, shown = await asyncio.to_thread(render_previews, data, added, body)
                 except Exception as e:
                     result.log.append(f"⚠️ vista previa no disponible ({e})")
             known |= ids
@@ -355,31 +529,39 @@ async def scan() -> ScanResult:
     return result
 
 
-def embed_dicts(item: NewItems, title: str | None = None) -> list[dict]:
-    """Embed principal + un embed por cada imagen extra (Discord los muestra juntos)."""
+def embed_batches(item: NewItems, title: str | None = None,
+                  per_message: int = IMAGES_PER_MESSAGE) -> list[tuple[list[dict], list[tuple[str, bytes]]]]:
+    """Mensajes a enviar: lista de (embeds, adjuntos). Discord agrupa hasta 4 imágenes
+    por mensaje (embeds con el mismo url), así que se reparten en varios mensajes."""
     ids = ", ".join(map(str, item.ids))
     if len(ids) > 1000:
         ids = ids[:997] + "..."
-    main = {
-        "title": title or f"🆕 {len(item.ids)} nuevo(s) handitem(s)",
-        "color": 0x2ECC71,
-        "fields": [
-            {"name": "IDs", "value": ids, "inline": False},
-            {"name": "Servidores", "value": ", ".join(item.domains), "inline": False},
-            {"name": "SWF", "value": item.swf_url[:1000], "inline": False},
-        ],
-    }
-    embeds = [main]
-    if item.images:
-        main["image"] = {"url": "attachment://preview_1.png"}
-        if len(item.images) > 1:
-            main["url"] = item.swf_url  # mismo url -> Discord agrupa las imágenes
-            for n in range(2, len(item.images) + 1):
+    title = title or f"🆕 {len(item.ids)} nuevo(s) handitem(s)"
+    batches = []
+    for b, start in enumerate(range(0, max(len(item.images), 1), per_message)):
+        chunk = item.images[start : start + per_message]
+        if b == 0:
+            head = {
+                "title": title,
+                "color": 0x2ECC71,
+                "fields": [
+                    {"name": "IDs", "value": ids, "inline": False},
+                    {"name": "Servidores", "value": ", ".join(item.domains), "inline": False},
+                    {"name": "SWF", "value": item.swf_url[:1000], "inline": False},
+                ],
+            }
+            if item.images and item.ids_shown < len(item.ids):
+                head["footer"] = {"text": f"Vista previa de {item.ids_shown} de {len(item.ids)} handitems"}
+        else:
+            head = {"title": f"{title} (continuación)", "color": 0x2ECC71}
+        embeds, files = [head], []
+        for n, data in enumerate(chunk, 1):
+            files.append((f"preview_{n}.png", data))
+        if chunk:
+            if len(chunk) > 1:
+                head["url"] = item.swf_url  # mismo url -> Discord agrupa las imágenes
+            head["image"] = {"url": "attachment://preview_1.png"}
+            for n in range(2, len(chunk) + 1):
                 embeds.append({"url": item.swf_url, "image": {"url": f"attachment://preview_{n}.png"}})
-        if item.ids_shown < len(item.ids):
-            main["footer"] = {"text": f"Vista previa de {item.ids_shown} de {len(item.ids)} handitems"}
-    return embeds
-
-
-def preview_files(item: NewItems) -> list[tuple[str, bytes]]:
-    return [(f"preview_{n}.png", data) for n, data in enumerate(item.images, 1)]
+        batches.append((embeds, files))
+    return batches
