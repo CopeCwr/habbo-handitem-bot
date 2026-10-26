@@ -296,15 +296,21 @@ class SpriteLib:
         return self._cache[short]
 
 
-def _part(lib: SpriteLib, action: str, part: str, typ: int, d: int, flip_ok: bool):
+SWAP_SIDE = {"lh": "rh", "rh": "lh"}
+
+
+def _part(lib: SpriteLib, action: str, part: str, typ: int, d: int, flip_ok: bool, swap: bool = False):
     """(imagen, izquierda, arriba) de una pieza. Las direcciones 4-6 del cuerpo se
-    obtienen en espejo de la 2-0 cuando no existen de forma nativa."""
+    obtienen en espejo de la 2-0 cuando no existen de forma nativa. Al espejar, la
+    izquierda y la derecha se intercambian (swap=True): el brazo izquierdo de la
+    dirección 4 es el espejo del brazo DERECHO de la dirección 2."""
     s = lib.get(f"h_{action}_{part}_{typ}_{d}_0")
     if s:
         img, (ox, oy) = s
         return img, -ox, -oy
     if flip_ok and d in (4, 5, 6):
-        s = lib.get(f"h_{action}_{part}_{typ}_{6 - d}_0")
+        src = SWAP_SIDE.get(part, part) if swap else part
+        s = lib.get(f"h_{action}_{src}_{typ}_{6 - d}_0")
         if s:
             img, (ox, oy) = s
             return img.transpose(Image.FLIP_LEFT_RIGHT), 2 * AXIS - (-ox + img.width), -oy
@@ -316,9 +322,9 @@ def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d:
         "sd": _part(body, "std", "sd", 1, 0, False),
         "bd": _part(body, "std", "bd", 1, d, True),
         "hd": _part(body, "std", "hd", 1, d, True),
-        "lh": (_part(body, "crr", "lh", 1, d, True) if pose == "crr" else None)
-        or _part(body, "std", "lh", 1, d, True),
-        "rh": _part(body, pose, "rh", 1, d, True),
+        # Solo el brazo derecho adopta la pose (crr/drk); el izquierdo queda en reposo (std)
+        "lh": _part(body, "std", "lh", 1, d, True, swap=True),
+        "rh": _part(body, pose, "rh", 1, d, True, swap=True),
         "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
     }
     return [(k, parts[k]) for k in ORDERS[d] if parts[k]]
