@@ -263,6 +263,9 @@ ORDERS = {0: ARMS_FRONT_ORDER, 1: PROFILE_ORDER, 2: ARMS_FRONT_ORDER, 3: ARMS_FR
 # Al sujetar (crr) de lado (dir 0 y 1) los dedos se enroscan sobre el objeto: la mano va delante.
 # Al beber no: el vaso está en los labios y la mano lo taparía.
 GRIP_ORDERS = {0: ("sd", "bd", "hd", "lh", "it", "rh"), 1: ("sd", "lh", "bd", "hd", "it", "rh")}
+# Al beber de espaldas (dir 0) la boca queda en el lado lejano de la cabeza: el brazo y el
+# objeto van DETRÁS de la cabeza (igual que ya pasa en 5, 6 y 7). Vale para todos los handitems.
+DRINK_ORDERS = {0: ("sd", "bd", "lh", "rh", "it", "hd")}
 POSE_LABEL = {"crr": "mano", "drk": "beber"}
 SHORT_RE = re.compile(r"(h_[a-z]+_[a-z]+_\d+_\d+_\d+)$")
 OFFSET_RE = re.compile(
@@ -333,7 +336,12 @@ def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d:
         "rh": _part(body, pose, "rh", 1, d, True, swap=True),
         "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
     }
-    order = GRIP_ORDERS[d] if (pose == "crr" and d in GRIP_ORDERS) else ORDERS[d]
+    if pose == "crr" and d in GRIP_ORDERS:
+        order = GRIP_ORDERS[d]
+    elif pose == "drk" and d in DRINK_ORDERS:
+        order = DRINK_ORDERS[d]
+    else:
+        order = ORDERS[d]
     return [(k, parts[k]) for k in order if parts[k]]
 
 
