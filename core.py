@@ -255,6 +255,9 @@ AV_CELL_W, AV_CELL_H, AV_SCALE, AV_TITLE_H = 184, 212, 2, 36
 FRONT_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")
 FRONT_LEFT_ORDER = ("sd", "rh", "bd", "lh", "hd", "it")  # dir 4: de frente, el objeto tapa la cara
 BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")
+# Al sujetar (crr) de lado (dir 0 y 1) los dedos se enroscan sobre el objeto: la mano va delante.
+# Al beber no: el vaso está en los labios y la mano lo taparía.
+GRIP_ORDER = ("sd", "lh", "bd", "hd", "it", "rh")
 ORDERS = {0: FRONT_ORDER, 1: FRONT_ORDER, 2: FRONT_ORDER, 3: FRONT_ORDER,
           4: FRONT_LEFT_ORDER, 5: BEHIND_ORDER, 6: BEHIND_ORDER, 7: BEHIND_ORDER}
 POSE_LABEL = {"crr": "mano", "drk": "beber"}
@@ -327,7 +330,8 @@ def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d:
         "rh": _part(body, pose, "rh", 1, d, True, swap=True),
         "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
     }
-    return [(k, parts[k]) for k in ORDERS[d] if parts[k]]
+    order = GRIP_ORDER if (pose == "crr" and d in (0, 1)) else ORDERS[d]
+    return [(k, parts[k]) for k in order if parts[k]]
 
 
 def _blit(canvas, img, x: int, y: int):
