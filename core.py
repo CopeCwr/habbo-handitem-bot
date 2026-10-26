@@ -248,18 +248,21 @@ def _render_table(data: bytes, ids, rows_per_page: int = ROWS_PER_PAGE,
 AXIS = 33  # eje de simetría del muñeco, medido en cuerpo/cabeza/manos frontales (las direcciones 4, 5 y 6 son la 2, 1 y 0 en espejo)
 DEF_WIN = (-14, -92, 78, 14)  # ventana por defecto (izq, arriba, der, abajo) en coords del muñeco
 AV_CELL_W, AV_CELL_H, AV_SCALE, AV_TITLE_H = 184, 212, 2, 36
-# Orden de dibujo (de atrás hacia delante) según hacia dónde mira el muñeco:
-#   0-3 mira hacia la derecha/frente: el brazo derecho (objeto) es el cercano -> delante
-#   4-7 mira hacia la izquierda/espalda: el brazo derecho queda lejos -> detrás del cuerpo,
-#       y el izquierdo (lh) pasa a ser el cercano -> delante del cuerpo
-FRONT_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")
-FRONT_LEFT_ORDER = ("sd", "rh", "bd", "lh", "hd", "it")  # dir 4: de frente, el objeto tapa la cara
-BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")
+# Orden de dibujo (de atrás hacia delante) según hacia dónde mira el muñeco.
+# Regla general (vale para cualquier handitem y pose):
+#   - brazo derecho (lleva el objeto): delante del cuerpo mirando a la derecha/frente (0-3),
+#     detrás del cuerpo mirando a la izquierda/espalda (4-7), porque queda del lado lejano.
+#   - brazo izquierdo (en reposo): su manga cuelga delante del torso en 0, 2 y 3 (se ve entero,
+#     con su contorno); en 1 queda tapado por el cuerpo; en 4-7 es el brazo cercano -> delante.
+ARMS_FRONT_ORDER = ("sd", "bd", "hd", "lh", "rh", "it")       # dir 0, 2, 3
+PROFILE_ORDER = ("sd", "lh", "bd", "hd", "rh", "it")           # dir 1 (el izquierdo queda oculto)
+FRONT_LEFT_ORDER = ("sd", "rh", "bd", "lh", "hd", "it")        # dir 4: de frente, el objeto tapa la cara
+BEHIND_ORDER = ("sd", "rh", "it", "bd", "lh", "hd")            # dir 5, 6, 7
+ORDERS = {0: ARMS_FRONT_ORDER, 1: PROFILE_ORDER, 2: ARMS_FRONT_ORDER, 3: ARMS_FRONT_ORDER,
+          4: FRONT_LEFT_ORDER, 5: BEHIND_ORDER, 6: BEHIND_ORDER, 7: BEHIND_ORDER}
 # Al sujetar (crr) de lado (dir 0 y 1) los dedos se enroscan sobre el objeto: la mano va delante.
 # Al beber no: el vaso está en los labios y la mano lo taparía.
-GRIP_ORDER = ("sd", "lh", "bd", "hd", "it", "rh")
-ORDERS = {0: FRONT_ORDER, 1: FRONT_ORDER, 2: FRONT_ORDER, 3: FRONT_ORDER,
-          4: FRONT_LEFT_ORDER, 5: BEHIND_ORDER, 6: BEHIND_ORDER, 7: BEHIND_ORDER}
+GRIP_ORDERS = {0: ("sd", "bd", "hd", "lh", "it", "rh"), 1: ("sd", "lh", "bd", "hd", "it", "rh")}
 POSE_LABEL = {"crr": "mano", "drk": "beber"}
 SHORT_RE = re.compile(r"(h_[a-z]+_[a-z]+_\d+_\d+_\d+)$")
 OFFSET_RE = re.compile(
@@ -330,7 +333,7 @@ def _avatar_parts(body: SpriteLib, items: SpriteLib, item_id: int, pose: str, d:
         "rh": _part(body, pose, "rh", 1, d, True, swap=True),
         "it": _part(items, pose, "ri", item_id, d, False),  # los objetos no se espejan
     }
-    order = GRIP_ORDER if (pose == "crr" and d in (0, 1)) else ORDERS[d]
+    order = GRIP_ORDERS[d] if (pose == "crr" and d in GRIP_ORDERS) else ORDERS[d]
     return [(k, parts[k]) for k in order if parts[k]]
 
 
